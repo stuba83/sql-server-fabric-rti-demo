@@ -14,7 +14,7 @@ BEGIN
         ON PRIMARY
         (
             NAME     = GasPlantDB_data,
-            FILENAME = 'D:\data\GasPlantDB.mdf',
+            FILENAME = 'F:\data\GasPlantDB.mdf',
             SIZE     = 512  MB,
             MAXSIZE  = 10   GB,
             FILEGROWTH = 256 MB
@@ -22,12 +22,12 @@ BEGIN
         LOG ON
         (
             NAME     = GasPlantDB_log,
-            FILENAME = 'D:\data\GasPlantDB.ldf',
+            FILENAME = 'F:\data\GasPlantDB.ldf',
             SIZE     = 256  MB,
             MAXSIZE  = 2    GB,
             FILEGROWTH = 128 MB
         );
-    PRINT 'Database GasPlantDB created on D:\data\.';
+    PRINT 'Database GasPlantDB created on F:\data\.';
 END
 ELSE
 BEGIN
