@@ -1,0 +1,152 @@
+// =============================================================================
+// eventhouse-schema.kql
+// External table declarations for the KQL Database in Fabric Eventhouse.
+//
+// These tables point at OneLake shortcuts in the Bronze Lakehouse intermediary
+// (ADR-001). Do NOT point shortcuts directly at the Mirrored Database — the
+// Query Acceleration engine will return a 401 on _delta_log.
+//
+// How to use:
+//   1. Open your KQL Database in Fabric.
+//   2. Click "Explore your data" → open the query editor.
+//   3. Replace <workspace-id> and <bronze-lakehouse-id> with your actual IDs
+//      (find them in the OneLake path shown in the lakehouse properties).
+//   4. Run this script to register all external tables.
+//
+// After registering, query with:  external_table('SensorReadings') | take 10
+// =============================================================================
+
+// ── Variables — set these before running ─────────────────────────────────────
+// Replace with your actual workspace and lakehouse IDs.
+let workspace_id    = "<your-workspace-id>";
+let lakehouse_id    = "<your-bronze-lakehouse-id>";
+
+// Base ABFS path for all tables
+// Shortcut tables land in Tables/<TableName> in the lakehouse
+// =============================================================================
+
+// SensorReadings ──────────────────────────────────────────────────────────────
+.create-or-alter external table SensorReadings (
+    reading_id  : long,
+    sensor_id   : int,
+    ts          : datetime,
+    value       : real,
+    quality     : int
+)
+kind = delta
+(
+    h@"abfss://<your-workspace-id>@onelake.dfs.fabric.microsoft.com/<your-bronze-lakehouse-id>/Tables/SensorReadings"
+)
+with
+(
+    docstring = "High-frequency LP Gas plant sensor telemetry (one row per tag per 5 s)",
+    folder    = "Bronze"
+)
+
+// Alarms ──────────────────────────────────────────────────────────────────────
+.create-or-alter external table Alarms (
+    alarm_id     : int,
+    sensor_id    : int,
+    alarm_type   : string,
+    alarm_value  : real,
+    alarm_time   : datetime,
+    acknowledged : bool,
+    ack_time     : datetime,
+    ack_by       : string
+)
+kind = delta
+(
+    h@"abfss://<your-workspace-id>@onelake.dfs.fabric.microsoft.com/<your-bronze-lakehouse-id>/Tables/Alarms"
+)
+with
+(
+    docstring = "ISA-18.2 threshold breach alarm events (H, HH, L, LL)",
+    folder    = "Bronze"
+)
+
+// EquipmentStatus ─────────────────────────────────────────────────────────────
+.create-or-alter external table EquipmentStatus (
+    event_id    : int,
+    unit_id     : int,
+    status      : string,
+    event_time  : datetime,
+    operator_id : string,
+    notes       : string
+)
+kind = delta
+(
+    h@"abfss://<your-workspace-id>@onelake.dfs.fabric.microsoft.com/<your-bronze-lakehouse-id>/Tables/EquipmentStatus"
+)
+with
+(
+    docstring = "Equipment operational state change events (Running, Stopped, Fault, Maintenance)",
+    folder    = "Bronze"
+)
+
+// GasQuality ──────────────────────────────────────────────────────────────────
+.create-or-alter external table GasQuality (
+    sample_id        : int,
+    unit_id          : int,
+    sample_time      : datetime,
+    methane_pct      : real,
+    ethane_pct       : real,
+    propane_pct      : real,
+    butane_pct       : real,
+    nitrogen_pct     : real,
+    co2_pct          : real,
+    h2s_ppm          : real,
+    gross_btu        : real,
+    specific_gravity : real
+)
+kind = delta
+(
+    h@"abfss://<your-workspace-id>@onelake.dfs.fabric.microsoft.com/<your-bronze-lakehouse-id>/Tables/GasQuality"
+)
+with
+(
+    docstring = "Hourly gas chromatograph composition samples",
+    folder    = "Bronze"
+)
+
+// Sensors (reference / lookup) ────────────────────────────────────────────────
+.create-or-alter external table Sensors (
+    sensor_id       : int,
+    tag_id          : string,
+    tag_name        : string,
+    equipment_id    : int,
+    parameter_type  : string,
+    unit_of_measure : string,
+    normal_min      : real,
+    normal_max      : real,
+    alarm_low       : real,
+    alarm_high      : real
+)
+kind = delta
+(
+    h@"abfss://<your-workspace-id>@onelake.dfs.fabric.microsoft.com/<your-bronze-lakehouse-id>/Tables/Sensors"
+)
+with
+(
+    docstring = "Instrument tag catalog (40 sensor tags across 2 trains)",
+    folder    = "Bronze"
+)
+
+// ProcessUnits (reference / lookup) ──────────────────────────────────────────
+.create-or-alter external table ProcessUnits (
+    unit_id        : int,
+    unit_name      : string,
+    unit_type      : string,
+    parent_unit_id : int,
+    location       : string,
+    commissioned   : datetime,
+    is_active      : bool
+)
+kind = delta
+(
+    h@"abfss://<your-workspace-id>@onelake.dfs.fabric.microsoft.com/<your-bronze-lakehouse-id>/Tables/ProcessUnits"
+)
+with
+(
+    docstring = "Plant equipment hierarchy (Plant → Train → Compressor / Separator / Meter)",
+    folder    = "Bronze"
+)

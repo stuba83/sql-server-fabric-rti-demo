@@ -1,0 +1,32 @@
+# LP Gas Plant IoT Sensor Simulator — Configuration
+# All values can be overridden via environment variables or command-line flags.
+
+database:
+  # Full ODBC connection string — loaded from this environment variable at runtime.
+  # Set the env var before running the simulator; never hard-code credentials here.
+  # Example (Windows Integrated Auth):
+  #   set SQL_CONN_STR=DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost;DATABASE=GasPlantDB;Trusted_Connection=yes;TrustServerCertificate=yes
+  # Example (SQL Auth):
+  #   set SQL_CONN_STR=DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost;DATABASE=GasPlantDB;UID=FabricMirrorLogin;PWD=<password>;TrustServerCertificate=yes
+  env_var: SQL_CONN_STR
+
+simulation:
+  interval_seconds: 5          # Time between sensor reading batches (all 40 tags inserted per interval)
+  anomaly_probability: 0.015   # Per-sensor probability of injecting an anomaly on each interval (1.5%)
+  alarm_persist_intervals: 6   # How many intervals an anomaly condition is sustained (6 × 5s = 30s)
+
+equipment_status:
+  update_interval_seconds: 300   # Emit EquipmentStatus rows every 5 minutes
+  fault_probability: 0.002       # Per-unit probability of simulating a Fault event per status update
+
+gas_quality:
+  sample_interval_seconds: 3600  # Hourly composition samples
+  # Base composition for LP gas (natural gas with LP fractions)
+  base_methane_pct: 92.5
+  base_ethane_pct: 4.2
+  base_propane_pct: 1.8
+  base_h2s_ppm: 2.1       # Low H2S — sweet gas
+  base_gross_btu: 1055.0  # BTU/scf
+
+logging:
+  level: INFO   # DEBUG | INFO | WARNING | ERROR

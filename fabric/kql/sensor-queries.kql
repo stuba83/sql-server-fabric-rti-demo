@@ -1,0 +1,231 @@
+// =============================================================================
+// sensor-queries.kql
+// Demo KQL queries for the LP Gas Plant Eventhouse.
+//
+// All queries use external_table() to hit the Bronze Lakehouse shortcuts
+// registered in eventhouse-schema.kql.
+//
+// Run these in the Fabric KQL Database query editor.
+// Use the section headers as titles for RTI Dashboard tiles.
+// =============================================================================
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. LATEST READING PER SENSOR TAG
+// Best for: Status table tile in RTI Dashboard
+// ─────────────────────────────────────────────────────────────────────────────
+external_table('SensorReadings')
+| summarize arg_max(ts, value, quality) by sensor_id
+| join kind=inner (
+    external_table('Sensors')
+    | project sensor_id, tag_id, tag_name, parameter_type, unit_of_measure,
+              normal_min, normal_max, alarm_low, alarm_high, equipment_id
+) on sensor_id
+| join kind=inner (
+    external_table('ProcessUnits')
+    | project unit_id, unit_name, unit_type
+) on $left.equipment_id == $right.unit_id
+| extend
+    status = case(
+        isnotnull(alarm_high) and value > alarm_high, "ALARM-H",
+        isnotnull(alarm_low)  and value < alarm_low,  "ALARM-L",
+        value > normal_max,                            "HIGH",
+        value < normal_min,                            "LOW",
+                                                       "NORMAL"
+    )
+| project
+    unit_name, tag_id, tag_name, parameter_type,
+    value      = round(value, 2),
+    unit_of_measure,
+    status,
+    quality,
+    last_updated = ts
+| order by unit_name asc, parameter_type asc
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. SENSOR TIME SERIES — LAST 2 HOURS (by parameter type)
+// Best for: Line chart tiles in RTI Dashboard (one per parameter_type)
+// Replace 'Pressure' with 'Temperature', 'Flow', 'RPM', 'Power', 'Level'
+// ─────────────────────────────────────────────────────────────────────────────
+let param_type = "Pressure";
+external_table('SensorReadings')
+| where ts >= ago(2h)
+| join kind=inner (
+    external_table('Sensors')
+    | where parameter_type == param_type
+    | project sensor_id, tag_id, unit_of_measure, equipment_id
+) on sensor_id
+| join kind=inner (
+    external_table('ProcessUnits')
+    | project unit_id, unit_name
+) on $left.equipment_id == $right.unit_id
+| project ts, unit_name, tag_id, value, unit_of_measure
+| order by tag_id asc, ts asc
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. COMPRESSOR PERFORMANCE OVERVIEW — LAST 15 MINUTES
+// Best for: Compressor health scoreboard tile
+// ─────────────────────────────────────────────────────────────────────────────
+external_table('SensorReadings')
+| where ts >= ago(15m)
+| join kind=inner (
+    external_table('Sensors')
+    | where parameter_type in ("Pressure", "Temperature", "RPM", "Power")
+    | project sensor_id, tag_id, parameter_type, unit_of_measure, equipment_id,
+              normal_min, normal_max
+) on sensor_id
+| join kind=inner (
+    external_table('ProcessUnits')
+    | where unit_type == "Compressor"
+    | project unit_id, unit_name
+) on $left.equipment_id == $right.unit_id
+| summarize
+    avg_value = round(avg(value), 2),
+    min_value = round(min(value), 2),
+    max_value = round(max(value), 2)
+    by unit_name, parameter_type, unit_of_measure
+| order by unit_name asc, parameter_type asc
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. ACTIVE ALARM COUNT (unacknowledged, last 24 h)
+// Best for: KPI card tile — shows alarm urgency
+// ─────────────────────────────────────────────────────────────────────────────
+external_table('Alarms')
+| where alarm_time >= ago(24h) and acknowledged == false
+| join kind=inner (
+    external_table('Sensors')
+    | project sensor_id, tag_id, equipment_id
+) on sensor_id
+| join kind=inner (
+    external_table('ProcessUnits')
+    | project unit_id, unit_name
+) on $left.equipment_id == $right.unit_id
+| summarize alarm_count = count() by unit_name, alarm_type
+| order by alarm_count desc
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. ALARM TREND — LAST 6 HOURS (1-minute buckets)
+// Best for: Bar chart / area chart showing alarm frequency over time
+// ─────────────────────────────────────────────────────────────────────────────
+external_table('Alarms')
+| where alarm_time >= ago(6h)
+| summarize alarm_count = count() by bin(alarm_time, 1m), alarm_type
+| order by alarm_time asc
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. TRAIN EXPORT FLOW — LAST HOUR (30-s rolling average)
+// Best for: Flow trend tile — shows plant throughput
+// ─────────────────────────────────────────────────────────────────────────────
+external_table('SensorReadings')
+| where ts >= ago(1h)
+| join kind=inner (
+    external_table('Sensors')
+    | where parameter_type == "Flow" and tag_id in ("A-FT-001", "B-FT-001")
+    | project sensor_id, tag_id
+) on sensor_id
+| summarize avg_flow_mmscfd = round(avg(value), 3) by bin(ts, 30s), tag_id
+| order by tag_id asc, ts asc
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. ANOMALY DETECTION — VALUES OUTSIDE NORMAL RANGE (last 30 min)
+// Best for: Highlighting sensors needing operator attention
+// ─────────────────────────────────────────────────────────────────────────────
+external_table('SensorReadings')
+| where ts >= ago(30m)
+| join kind=inner (
+    external_table('Sensors')
+    | project sensor_id, tag_id, tag_name, parameter_type,
+              unit_of_measure, normal_min, normal_max, equipment_id
+) on sensor_id
+| where value > normal_max or value < normal_min
+| join kind=inner (
+    external_table('ProcessUnits')
+    | project unit_id, unit_name
+) on $left.equipment_id == $right.unit_id
+| extend deviation_pct = round(100.0 * (value - (normal_min + normal_max) / 2.0) / ((normal_max - normal_min) / 2.0), 1)
+| project ts, unit_name, tag_id, tag_name, parameter_type,
+          value = round(value, 2), unit_of_measure,
+          normal_min, normal_max, deviation_pct
+| order by abs(deviation_pct) desc
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. GAS QUALITY TREND — LAST 24 HOURS (hourly CH4, BTU, H2S)
+// Best for: Gas composition trend chart
+// ─────────────────────────────────────────────────────────────────────────────
+external_table('GasQuality')
+| where sample_time >= ago(24h)
+| join kind=inner (
+    external_table('ProcessUnits')
+    | where unit_type == "Train"
+    | project unit_id, unit_name
+) on unit_id
+| project
+    sample_time,
+    unit_name,
+    methane_pct = round(methane_pct, 2),
+    gross_btu   = round(gross_btu, 1),
+    h2s_ppm     = round(h2s_ppm, 2)
+| order by unit_name asc, sample_time asc
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. DISCHARGE PRESSURE RATIO (compression ratio) — LAST 15 MIN
+// Best for: Compressor health KPI — ratio = discharge_P / suction_P
+// Normal range: 2.0 – 4.0 for LP gas reciprocating compressors
+// ─────────────────────────────────────────────────────────────────────────────
+let readings_15m =
+    external_table('SensorReadings')
+    | where ts >= ago(15m)
+    | summarize avg_value = avg(value) by sensor_id;
+external_table('Sensors')
+| where parameter_type == "Pressure"
+| project sensor_id, tag_id, equipment_id
+| join kind=inner readings_15m on sensor_id
+| extend
+    is_suction   = tag_id contains "PT-001",
+    is_discharge = tag_id contains "PT-002"
+| summarize
+    suction_avg   = avgif(avg_value, is_suction),
+    discharge_avg = avgif(avg_value, is_discharge)
+    by equipment_id
+| extend compression_ratio = round(discharge_avg / suction_avg, 2)
+| join kind=inner (
+    external_table('ProcessUnits')
+    | where unit_type == "Compressor"
+    | project unit_id, unit_name
+) on $left.equipment_id == $right.unit_id
+| project unit_name, suction_avg = round(suction_avg,1), discharge_avg = round(discharge_avg,1), compression_ratio
+| order by unit_name asc
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. RATE OF CHANGE — FAST PRESSURE RISE DETECTION (last 5 min, per sensor)
+// Best for: Early warning of surge or blowout conditions
+// ─────────────────────────────────────────────────────────────────────────────
+external_table('SensorReadings')
+| where ts >= ago(5m)
+| join kind=inner (
+    external_table('Sensors')
+    | where parameter_type == "Pressure"
+    | project sensor_id, tag_id, unit_of_measure
+) on sensor_id
+| summarize
+    first_value = take_anyif(value, ts == min(ts)),
+    last_value  = take_anyif(value, ts == max(ts)),
+    min_ts      = min(ts),
+    max_ts      = max(ts)
+    by sensor_id, tag_id, unit_of_measure
+| extend
+    delta       = round(last_value - first_value, 2),
+    elapsed_min = round(datetime_diff('second', max_ts, min_ts) / 60.0, 2),
+    rate_per_min = round((last_value - first_value) / (datetime_diff('second', max_ts, min_ts) / 60.0), 3)
+| where abs(rate_per_min) > 0.5  // flag sensors changing faster than 0.5 bar/min
+| project tag_id, first_value, last_value, delta, rate_per_min, unit_of_measure
+| order by abs(rate_per_min) desc
