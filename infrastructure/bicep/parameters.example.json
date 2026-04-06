@@ -12,7 +12,7 @@
       "value": "sqladmin"
     },
     "allowedRdpSourceAddressPrefix": {
-      "value": "*"
+      "value": "<TU-IP-PUBLICA>/32"
     },
     "vmSize": {
       "value": "Standard_D4s_v3"

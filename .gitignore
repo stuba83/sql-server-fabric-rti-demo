@@ -18,8 +18,9 @@ env/
 *.secret
 *secrets*
 *credentials*
+parameters.json
 parameters.*.json
-!parameters.json
+!parameters.example.json
 
 # Bicep compiled output
 *.json.bicep
