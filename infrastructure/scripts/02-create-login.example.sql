@@ -2,8 +2,9 @@
 -- 02-create-login.sql
 -- Create SQL Server login and user for Fabric Mirroring
 --
--- IMPORTANT: Change the password before running in any shared environment.
---            Use a strong password: min 12 chars, upper+lower+digit+symbol.
+-- IMPORTANT: Copy this file to 02-create-login.sql (git-ignored) and replace
+--            <FABRIC-MIRROR-PASSWORD> with a strong password before running.
+--            Strong password: min 12 chars, upper+lower+digit+symbol.
 --
 -- The login needs:
 --   - db_datareader          → read all tables
@@ -20,7 +21,7 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'FabricMirrorLogin')
 BEGIN
     CREATE LOGIN FabricMirrorLogin
-        WITH PASSWORD         = 'Ch@ngeM3!2026#Fabric',
+        WITH PASSWORD         = '<FABRIC-MIRROR-PASSWORD>',
              CHECK_POLICY     = ON,
              CHECK_EXPIRATION = OFF;
     PRINT 'Login FabricMirrorLogin created.';

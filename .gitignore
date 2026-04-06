@@ -19,6 +19,7 @@ env/
 *secrets*
 *credentials*
 parameters.json
+02-create-login.sql
 parameters.*.json
 !parameters.example.json
 
