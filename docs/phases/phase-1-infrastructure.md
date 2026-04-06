@@ -20,14 +20,19 @@
 - Azure CLI logged in: `az login`
 - A resource group created (or let the script create one):
   ```bash
-  az group create --name rg-fabric-rti-demo --location eastus
+  az group create --name rg-rtidemo --location westus3
+  ```
+
+> ⚠️ **Region availability:** `Standard_D4s_v3` may not be available in all regions. If deployment fails with a capacity error, try `westus3`, `eastus2`, or `northeurope`. Update `location` in `parameters.json` accordingly.
+
+  ```bash
   ```
 
 ### Deploy
 
 ```bash
 az deployment group create \
-  --resource-group rg-fabric-rti-demo \
+  --resource-group rg-rtidemo \
   --template-file infrastructure/bicep/main.bicep \
   --parameters infrastructure/bicep/parameters.json \
   --parameters adminPassword="<YourStrongPassword>"
@@ -40,7 +45,7 @@ az deployment group create \
 
 ```bash
 az deployment group show \
-  --resource-group rg-fabric-rti-demo \
+  --resource-group rg-rtidemo \
   --name main \
   --query properties.outputs
 ```
@@ -81,7 +86,17 @@ Run the SQL scripts **in this exact order**:
 sql/schema/01-create-database.sql
 ```
 
-> Creates `GasPlantDB` on `D:\data\` (the dedicated data disk), sets FULL recovery model.
+> Creates `GasPlantDB` on `F:\data\` (the dedicated data disk), sets FULL recovery model.
+>
+> ⚠️ **Data disk drive letter:** On Windows Server 2022 VMs, `D:` is typically the temporary/CD-ROM disk and `E:` may already be assigned. You likely need to initialize the 256 GB data disk (Disk 2) manually and assign it `F:\`:
+> ```powershell
+> # Run as Administrator in PowerShell on the VM
+> Initialize-Disk -Number 2 -PartitionStyle GPT -ErrorAction SilentlyContinue
+> New-Partition -DiskNumber 2 -DriveLetter F -UseMaximumSize
+> Format-Volume -DriveLetter F -FileSystem NTFS -NewFileSystemLabel "SQLData" -Confirm:$false
+> New-Item -ItemType Directory -Path F:\data
+> ```
+> Then verify the drive letter with `Get-PSDrive` before running Script 1. Update paths in `sql/schema/01-create-database.sql` if needed.
 
 ### Script 2 — Create Tables
 
@@ -118,8 +133,20 @@ infrastructure/scripts/01-enable-cdc.sql
 infrastructure/scripts/02-create-login.sql
 ```
 
-> Creates `FabricMirrorLogin` with minimum required permissions.  
-> **Change the password** in the script before running if this environment will be shared.
+> Creates `FabricMirrorLogin` with minimum required permissions. Use `02-create-login.example.sql` as your template — copy it to `02-create-login.sql` (gitignored) and replace `<FABRIC-MIRROR-PASSWORD>` with a strong password.
+>
+> ⚠️ **Mixed Authentication mode required:** SQL Server Developer edition defaults to Windows Authentication only. Before running this script:
+> 1. SSMS → right-click server → **Properties** → **Security** → Server Authentication → **SQL Server and Windows Authentication mode** → OK
+> 2. Restart the SQL Server service (Services app or `Restart-Service MSSQLSERVER`)
+>
+> ⚠️ **CDC stored proc grants must run in `master` context:** `sp_cdc_get_captured_columns` and `sp_cdc_help_change_data_capture` live in `master`. The example script already handles this correctly — it creates a user in `master` for the login first:
+> ```sql
+> USE master;
+> CREATE USER FabricMirrorUser FOR LOGIN FabricMirrorLogin;
+> GRANT EXECUTE ON sp_cdc_get_captured_columns TO FabricMirrorLogin;
+> GRANT EXECUTE ON sp_cdc_help_change_data_capture TO FabricMirrorLogin;
+> ```
+> Running these grants in `GasPlantDB` context will fail silently — Mirroring will show tables as "Running with warnings".
 
 ---
 
@@ -136,6 +163,13 @@ Fabric VNet Data Gateway connects over TCP 1433. Verify:
      -RemoteAddress 10.0.2.0/24 -Action Allow
    ```
 
+4. **Disable Force Encryption** (required for Fabric VNet Data Gateway connectivity over private VNet without a trusted CA certificate):
+   - Open **Registry Editor** → `HKLM\SOFTWARE\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib`
+   - Set `ForceEncryption` = `0`
+   - Restart SQL Server service
+
+5. In SSMS when connecting locally: **Encryption = Optional**, **Trust Server Certificate = true**.
+
 ---
 
 ## Step 5 — Run the IoT Simulator
@@ -143,8 +177,13 @@ Fabric VNet Data Gateway connects over TCP 1433. Verify:
 On the VM, open PowerShell:
 
 ```powershell
-# Install Python (if not present — download from python.org or winget)
-winget install Python.Python.3.11
+# Install Python — winget is NOT available on Windows Server 2022 by default.
+# Download the installer directly:
+Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" `
+  -OutFile "C:\Temp\python-3.11.9.exe"
+Start-Process -Wait -FilePath "C:\Temp\python-3.11.9.exe" `
+  -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1"
+# Re-open PowerShell after install to pick up PATH
 
 # Copy simulator files to VM (or clone the repo)
 # Assuming repo is at C:\demo\
@@ -153,10 +192,40 @@ cd C:\demo\simulator
 pip install -r requirements.txt
 
 # Set connection string (Windows Integrated Auth — simplest for demo)
-$env:SQL_CONN_STR = "DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost;DATABASE=GasPlantDB;Trusted_Connection=yes;TrustServerCertificate=yes"
+# ODBC Driver 17 is pre-installed on the SQL Server marketplace image.
+# ODBC Driver 18 requires a separate download — use 17 unless you need newer features.
+$env:SQL_CONN_STR = "DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost;DATABASE=GasPlantDB;Trusted_Connection=yes;TrustServerCertificate=yes"
 
 python sensor_simulator.py
 ```
+
+### Run as a Windows Scheduled Task (recommended for persistence across logins)
+
+To keep the simulator running after you close the RDP session:
+
+```powershell
+# Set SQL_CONN_STR as a Machine-level environment variable (persists across sessions)
+[System.Environment]::SetEnvironmentVariable(
+    'SQL_CONN_STR',
+    'DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost;DATABASE=GasPlantDB;Trusted_Connection=yes;TrustServerCertificate=yes',
+    'Machine'
+)
+
+# Create a Scheduled Task that starts on system boot, runs as sqladmin
+$action  = New-ScheduledTaskAction -Execute 'python' `
+             -Argument 'C:\demo\simulator\sensor_simulator.py' `
+             -WorkingDirectory 'C:\demo\simulator'
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName 'SensorSimulator' `
+    -Action $action -Trigger $trigger -Settings $settings `
+    -RunLevel Highest -Force
+
+# Start immediately
+Start-ScheduledTask -TaskName 'SensorSimulator'
+```
+
+> The task runs as the `sqladmin` user (who owns the SQL Server service), ensuring `Trusted_Connection=yes` resolves correctly.
 
 Expected output:
 ```
@@ -213,6 +282,28 @@ In the Mirrored Database item:
 - Click on `SensorReadings` → Preview — should show sensor readings from the simulator
 
 > If you see "Replication stopped" on any table: check CDC is enabled (Script 4), SQL Server Agent is running, and the login has correct permissions.
+>
+> ⚠️ If `ProcessUnits` or `Sensors` show **"Running with warnings"**: `FabricMirrorLogin` needs `db_owner` role on `GasPlantDB`:
+> ```sql
+> USE GasPlantDB;
+> ALTER ROLE db_owner ADD MEMBER FabricMirrorUser;
+> ```
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Bicep deployment fails with capacity error | SKU not available in region | Change `location` to `westus3` or `westus2` in `parameters.json` |
+| `D:\data\` path error in Script 1 | D: is CD-ROM, not data disk | Initialize Disk 2 as `F:\` (see Step 3 Script 1 note) |
+| `Initialize-Disk` fails (disk already GPT) | Disk already initialized | Skip `Initialize-Disk`, run `New-Partition -DiskNumber 2 -DriveLetter F -UseMaximumSize` directly |
+| SQL Login creation fails | Windows Auth only mode | Enable Mixed Auth in Server Properties → Security, restart SQL Server |
+| Mirroring SSL error / connection refused | ForceEncryption=1 | Set `ForceEncryption=0` in registry (see Step 4), restart SQL Server |
+| CDC grant fails (`Cannot find the object`) | Wrong database context | Run CDC grants in `master` context (see Script 5 note) |
+| `ProcessUnits`/`Sensors` show "Running with warnings" | Missing db_owner | `ALTER ROLE db_owner ADD MEMBER FabricMirrorUser` in GasPlantDB |
+| Simulator fails with "ODBC Driver 18 not found" | Driver not installed | Use `ODBC Driver 17 for SQL Server` (pre-installed on marketplace image) |
+| Simulator exits after RDP session closes | Running interactively | Set up Windows Scheduled Task (see Step 5) |
 
 ---
 
