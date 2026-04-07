@@ -227,6 +227,30 @@ Start-ScheduledTask -TaskName 'SensorSimulator'
 
 > The task runs as the `sqladmin` user (who owns the SQL Server service), ensuring `Trusted_Connection=yes` resolves correctly.
 
+### Verify and manage the simulator
+
+```powershell
+# Check if running (should show State = Running)
+Get-ScheduledTask -TaskName 'SensorSimulator' | Select-Object TaskName, State
+
+# Check last run result (LastTaskResult = 0 means success)
+Get-ScheduledTaskInfo -TaskName 'SensorSimulator' | Select-Object LastRunTime, LastTaskResult
+
+# Start manually if State = Ready (not running)
+Start-ScheduledTask -TaskName 'SensorSimulator'
+
+# Stop if needed
+Stop-ScheduledTask -TaskName 'SensorSimulator'
+```
+
+Confirm data is flowing into SQL Server (run in SSMS):
+```sql
+SELECT TOP 5 reading_id, sensor_id, ts, value
+FROM GasPlantDB.dbo.SensorReadings
+ORDER BY reading_id DESC;
+```
+The `reading_id` should increase by 40 every 5 seconds (one reading per sensor per tick).
+
 Expected output:
 ```
 2026-04-06T10:00:05 [INFO    ] Connected to SQL Server.
