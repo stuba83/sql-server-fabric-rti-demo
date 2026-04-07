@@ -209,23 +209,34 @@ external_table('Sensors')
 // 10. RATE OF CHANGE — FAST PRESSURE RISE DETECTION (last 5 min, per sensor)
 // Best for: Early warning of surge or blowout conditions
 // ─────────────────────────────────────────────────────────────────────────────
-external_table('SensorReadings')
-| where ts >= ago(5m)
-| join kind=inner (
-    external_table('Sensors')
-    | where parameter_type == "Pressure"
-    | project sensor_id, tag_id, unit_of_measure
-) on sensor_id
-| summarize
-    first_value = take_anyif(value, ts == min(ts)),
-    last_value  = take_anyif(value, ts == max(ts)),
-    min_ts      = min(ts),
-    max_ts      = max(ts)
-    by sensor_id, tag_id, unit_of_measure
+let enriched =
+    external_table('SensorReadings')
+    | where ts >= ago(5m)
+    | join kind=inner (
+        external_table('Sensors')
+        | where parameter_type == "Pressure"
+        | project sensor_id, tag_id, unit_of_measure
+    ) on sensor_id;
+let first_readings =
+    enriched
+    | summarize arg_min(ts, value) by sensor_id, tag_id, unit_of_measure
+    | project sensor_id, tag_id, unit_of_measure, first_value = value, first_ts = ts;
+let last_readings =
+    enriched
+    | summarize arg_max(ts, value) by sensor_id, tag_id, unit_of_measure
+    | project sensor_id, tag_id, unit_of_measure, last_value = value, last_ts = ts;
+first_readings
+| join kind=inner last_readings on sensor_id, tag_id, unit_of_measure
 | extend
-    delta       = round(last_value - first_value, 2),
-    elapsed_min = round(datetime_diff('second', max_ts, min_ts) / 60.0, 2),
-    rate_per_min = round((last_value - first_value) / (datetime_diff('second', max_ts, min_ts) / 60.0), 3)
+    elapsed_min  = round(datetime_diff('second', last_ts, first_ts) / 60.0, 2),
+    delta        = round(last_value - first_value, 2)
+| extend
+    rate_per_min = iff(elapsed_min > 0, round(delta / elapsed_min, 3), 0.0)
 | where abs(rate_per_min) > 0.5  // flag sensors changing faster than 0.5 bar/min
-| project tag_id, first_value, last_value, delta, rate_per_min, unit_of_measure
+| project tag_id,
+          first_value  = round(first_value, 2),
+          last_value   = round(last_value, 2),
+          delta,
+          rate_per_min,
+          unit_of_measure
 | order by abs(rate_per_min) desc
