@@ -126,6 +126,12 @@ infrastructure/scripts/01-enable-cdc.sql
 > Verify: last query in the script shows `is_cdc_enabled = 1` and 4 tracked tables.
 
 > **Requirement:** SQL Server Agent must be running. In SSMS Object Explorer → SQL Server Agent → if stopped, right-click → Start.
+> 
+> Set it to start automatically so it survives VM reboots:
+> ```powershell
+> Set-Service SQLSERVERAGENT -StartupType Automatic
+> Start-Service SQLSERVERAGENT
+> ```
 
 ### Script 5 — Create Fabric Login
 
@@ -328,6 +334,8 @@ In the Mirrored Database item:
 | `ProcessUnits`/`Sensors` show "Running with warnings" | Missing db_owner | `ALTER ROLE db_owner ADD MEMBER FabricMirrorUser` in GasPlantDB |
 | Simulator fails with "ODBC Driver 18 not found" | Driver not installed | Use `ODBC Driver 17 for SQL Server` (pre-installed on marketplace image) |
 | Simulator exits after RDP session closes | Running interactively | Set up Windows Scheduled Task (see Step 5) |
+| Mirroring stalls — rows stop replicating, status shows "Running" but count doesn't advance | SQL Server Agent stopped (CDC capture job hangs) | `Start-Service SQLSERVERAGENT` on VM, then `EXEC msdb.dbo.sp_start_job @job_name = 'cdc.GasPlantDB_capture'` in SSMS. Set Agent to `Automatic` startup. |
+| `cdc.GasPlantDB_capture` job never stops (shows NULL stop_execution_date after 24h) | SQL Server Agent crashed while job was running | Stop Agent → Start Agent → job auto-restarts |
 
 ---
 
