@@ -24,124 +24,116 @@ GasPlant (1)
 Each node in the graph exposes **live telemetry** from the Eventhouse KQL Database.  
 The **Operations Agent** uses this graph + live data to answer natural language questions about plant health.
 
----
-
-## Step 1 — Review DTDL Models
-
-The DTDL (Digital Twins Definition Language) model files are in `fabric/ontology/dtdl/`:
-
-| File | Interface ID | Represents |
-|---|---|---|
-| `GasPlant.json` | `dtmi:demo:energyrti:GasPlant;1` | Entire plant; contains Trains |
-| `Train.json` | `dtmi:demo:energyrti:Train;1` | Processing train; has Compressors and Sensors |
-| `Compressor.json` | `dtmi:demo:energyrti:Compressor;1` | Individual compressor; has Sensors |
-| `Sensor.json` | `dtmi:demo:energyrti:Sensor;1` | Instrument tag; telemetry = live value |
-
-### Key design points
-
-- **`TimeSeriesId`** properties (`tagId`, `trainId`, `compressorId`, `plantId`) link the ontology node to its time-series data in the Eventhouse
-- **Telemetry** fields represent real-time values; **Properties** represent static metadata
-- Relationships form the graph edges: `GasPlant.contains → Train`, `Train.hasCompressor → Compressor`, `Compressor.hasSensor → Sensor`
+> **Implementation note:** Fabric Ontology (Preview) does **not** support DTDL (Digital Twins Definition Language) import.  
+> Entity types are created directly inside the Fabric Ontology editor, bound to data sources (Semantic Model or OneLake).  
+> The approach used here: generate ontology from a dedicated Semantic Model backed by `silver_rti` MLV tables.
 
 ---
 
-## Step 2 — Create Fabric Ontology Item
+## Step 1 — Create the Ontology Semantic Model
 
-> **Note:** Fabric Ontology is a Preview feature. Enable it in your Fabric tenant if not already on.  
+The ontology needs a dedicated Semantic Model with DAX measures — separate from the Power BI reporting model.
+
+1. Open `silver_rti` → switch to **SQL analytics endpoint** view
+2. Toolbar → **New semantic model**
+3. Name: `GasPlant_Ontology_SM`
+4. Storage mode: **Direct Lake on SQL**
+5. Select tables: `SensorCurrentState`, `SensorHourlyAgg`, `CompressorKpiHourly`
+6. **Confirm**
+
+### Add DAX measures
+
+In the model editor, add the following measures to enrich the ontology:
+
+**On `SensorCurrentState` table:**
+```dax
+Sensors in Alarm =
+CALCULATE(
+    COUNTROWS(SensorCurrentState),
+    SensorCurrentState[alarm_status] IN {"ALARM-H", "ALARM-L"}
+)
+
+Sensors Out of Range =
+CALCULATE(
+    COUNTROWS(SensorCurrentState),
+    SensorCurrentState[is_out_of_range] = TRUE()
+)
+```
+
+**On `CompressorKpiHourly` table:**
+```dax
+Avg Compression Ratio =
+DIVIDE(
+    AVERAGEX(CompressorKpiHourly, CompressorKpiHourly[avg_discharge_pressure]),
+    AVERAGEX(CompressorKpiHourly, CompressorKpiHourly[avg_suction_pressure])
+)
+```
+
+**On `SensorHourlyAgg` table:**
+```dax
+Alarm Rate Last Hour =
+CALCULATE(
+    SUMX(SensorHourlyAgg, SensorHourlyAgg[alarm_count]),
+    TOPN(1, VALUES(SensorHourlyAgg[hour]), SensorHourlyAgg[hour], DESC)
+)
+```
+
+---
+
+## Step 2 — Generate Fabric Ontology from Semantic Model
+
+> **Note:** Fabric Ontology is a Preview feature. Enable it first:  
 > Admin Portal → Tenant settings → Ontology (Preview) → Enabled.
 
-1. Fabric workspace → **+ New item** → search for **Ontology**
-2. Name: `GasPlant Ontology`
-3. The ontology editor opens
-
-### Upload DTDL models
-
-1. In the ontology editor → **Upload models**
-2. Upload all 4 files from `fabric/ontology/dtdl/`:
-   - `GasPlant.json`
-   - `Train.json`
-   - `Compressor.json`
-   - `Sensor.json`
-3. Fabric validates the JSON and shows the interface graph — verify the 4 interfaces and their relationships are visible
+1. Open `GasPlant_Ontology_SM` semantic model
+2. Ribbon → **Generate Ontology**
+3. Workspace: your workspace, Name: `GasPlant_Ontology`
+4. **Create** — Fabric generates entity types from the 3 tables automatically
 
 ---
 
-## Step 3 — Create Twin Instances
+## Step 3 — Configure Entity Types
 
-Create one twin instance per piece of equipment. This maps ontology interfaces to real asset IDs.
+After generation, the ontology editor shows 3 entity types. Configure each:
 
-### In the Ontology item → Instance view:
+### SensorCurrentState (rename to `Sensor`)
+- Entity type key: `sensor_id`
+- Instance display name: `tag_name`
+- Verify properties: `sensor_id`, `tag_id`, `tag_name`, `parameter_type`, `value`, `alarm_status`, `is_out_of_range`, `equipment_name`
 
-**GasPlant twin:**
-- Interface: `dtmi:demo:energyrti:GasPlant;1`
-- `plantId`: `LPGP-001`
-- `plantName`: `LP Gas Plant`
-- `location`: `Point Lisas Industrial Estate`
-- `totalTrains`: `2`
+### SensorHourlyAgg
+- Entity type key: `sensor_id`
+  > `hour` column (timestamp type) cannot be used as key — Fabric only accepts string/integer keys
+- Verify properties include: `avg_value`, `min_value`, `max_value`, `alarm_count`, `reading_count`, `hour`
 
-**Train twins (2):**
-| Twin ID | trainId | trainName | location |
-|---|---|---|---|
-| `Train_A` | `Train_A` | `Train A` | `North Processing Pad` |
-| `Train_B` | `Train_B` | `Train B` | `South Processing Pad` |
-
-**Compressor twins (6):**
-| Twin ID | compressorId | compressorName | nominalRpm |
-|---|---|---|---|
-| `A_K100` | `A-K100` | `Train A – Compressor K100` | `3400` |
-| `A_K200` | `A-K200` | `Train A – Compressor K200` | `3400` |
-| `A_K300` | `A-K300` | `Train A – Compressor K300` | `3400` |
-| `B_K100` | `B-K100` | `Train B – Compressor K100` | `3400` |
-| `B_K200` | `B-K200` | `Train B – Compressor K200` | `3400` |
-| `B_K300` | `B-K300` | `Train B – Compressor K300` | `3400` |
-
-**Sensor twins (40):** One per row in `dbo.Sensors`.  
-Key mapping example:
-| Twin ID | tagId | parameterType | unitOfMeasure |
-|---|---|---|---|
-| `A_K100_PT_001` | `A-K100-PT-001` | `Pressure` | `bar` |
-| `A_K100_TT_002` | `A-K100-TT-002` | `Temperature` | `°C` |
-| `A_K100_ST_001` | `A-K100-ST-001` | `RPM` | `RPM` |
-
-### Create relationships
-
-Link twins using the defined relationships:
-- `LPGP-001 → contains → Train_A`
-- `LPGP-001 → contains → Train_B`
-- `Train_A → hasCompressor → A_K100` (and K200, K300)
-- `Train_B → hasCompressor → B_K100` (and K200, K300)
-- `A_K100 → hasSensor → A_K100_PT_001` (etc.)
+### CompressorKpiHourly (rename to `Compressor`)
+- Entity type key: `equipment_id`
+- Instance display name: `equipment_name`
+- Verify properties: `equipment_id`, `equipment_name`, `avg_suction_pressure`, `avg_discharge_pressure`, `avg_speed_rpm`, `avg_power_kw`
 
 ---
 
-## Step 4 — Connect Telemetry Source (Eventhouse)
+## Step 4 — Configure Relationships
 
-In the Ontology item → **Telemetry source** → **+ Add source**:
+Add or verify the relationship between entity types:
 
-1. Source type: **KQL Database**
-2. Select: `GasPlantKQL` (your Eventhouse KQL Database)
-3. Map telemetry:
-   - Ontology field: `Sensor.value` → KQL source: `external_table('SensorReadings')` → field: `value`
-   - Join key: `Sensor.tagId` ↔ `Sensors.tag_id` ↔ `SensorReadings.sensor_id`
-
-For historical data queries, also add:
-4. Source type: **Lakehouse (SQL Endpoint)**
-5. Select: `silver_lakehouse` SQL endpoint
-6. This enables the Operations Agent to answer questions about historical data
+1. Ribbon → **Add relationship**
+2. Name: `hasSensorHistory`
+   - From: `Sensor` (SensorCurrentState) → column: `sensor_id`
+   - To: `SensorHourlyAgg` → column: `sensor_id`
+3. **Save**
 
 ---
 
 ## Step 5 — Configure Operations Agent
 
-> The Operations Agent is a generative AI agent that queries the ontology graph and connected data sources using natural language.
+> The Operations Agent is a generative AI agent that queries the ontology graph using natural language.
 
 1. Fabric workspace → **+ New item → Operations Agent**
 2. Name: `Gas Plant Operations Agent`
-3. Connect to: `GasPlant Ontology`
+3. Connect to: `GasPlant_Ontology`
 
 ### Define agent context instructions
-
-In the agent configuration, add system instructions:
 
 ```
 You are an operations assistant for an LP Gas processing plant.
@@ -154,8 +146,8 @@ Key terminology:
 - Compression ratio is discharge pressure ÷ suction pressure (normal: 2.0–4.0)
 - Alarm types: H = High, HH = High-High, L = Low, LL = Low-Low (ISA-18.2)
 
-When asked about current conditions, query live data from the Eventhouse.
-When asked about historical trends (more than 1 hour ago), query from the Silver Lakehouse.
+When asked about current conditions, use SensorCurrentState data.
+When asked about historical trends, use SensorHourlyAgg data.
 Always include the timestamp of the data you are reporting.
 ```
 
@@ -163,7 +155,7 @@ Always include the timestamp of the data you are reporting.
 
 Try these sample prompts:
 1. "What is the current discharge pressure on Train A compressor K100?"
-2. "Are there any active alarms on Train B right now?"
+2. "Are there any active alarms right now?"
 3. "Which compressor has the highest power consumption in the last hour?"
 4. "Has the compression ratio on A-K200 been within normal range today?"
 5. "What was the average Train A export flow yesterday?"
@@ -173,9 +165,17 @@ Try these sample prompts:
 ## Phase 4 Complete ✓
 
 **What you have:**
-- DTDL ontology models representing the full plant hierarchy (GasPlant → Train → Compressor → Sensor)
-- 40+ twin instances linked by relationships in the Fabric Ontology item
-- Live telemetry connected from the Eventhouse KQL Database
-- Operations Agent answering natural language questions about real-time plant health
+- `GasPlant_Ontology_SM` semantic model with DAX measures over Silver MLV tables
+- `GasPlant_Ontology` with 3 entity types (`Sensor`, `SensorHourlyAgg`, `Compressor`) bound to live Silver data
+- Operations Agent answering natural language questions about plant health
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Ontology binding fails on MLV tables | MLVs registered as external tables (not managed) | Use Direct Lake on SQL storage mode in the semantic model |
+| `hour` column not available as entity key | Timestamp type not supported as key | Use `sensor_id` alone as key; `hour` remains a filterable property |
+| DTDL import not available | Fabric Ontology (Preview) does not support DTDL | Create entity types manually in the editor or generate from semantic model |
+| Generate Ontology button not visible | Ontology Preview not enabled in tenant | Admin Portal → Tenant settings → Ontology (Preview) → Enabled |
 
 **Next:** [Phase 5 — Fabric Data Agent](phase-5-data-agent.md)
