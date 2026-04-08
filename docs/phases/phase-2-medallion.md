@@ -12,6 +12,7 @@
 | **Bronze** | `bronze_rti` Lakehouse | OneLake Shortcuts to Mirrored DB tables | You (one-time setup) |
 | **Silver** | `silver_rti` Lakehouse | Enriched, type-safe, status-annotated readings | Spark Structured Streaming (always-on) |
 | **Gold** | `silver_rti` (MLVs) | Hourly aggregations, current state, compressor KPIs | Fabric Materialized Lake Views (scheduled) |
+| **Silver (dims)** | `silver_rti` | Operational dimension tables (Employees, Shifts, EquipmentSpecs, OperatingLimits…) | PySpark seed notebook (one-time) |
 
 > **Why a Bronze Lakehouse intermediary?**  
 > See [ADR-001](../../architecture/decisions/001-lakehouse-intermediary-for-eventhouse-acceleration.md).  
@@ -207,12 +208,40 @@ Create a Power BI report:
 
 ---
 
+## Step 6 — Seed Operational Dimension Tables in Silver
+
+The Silver layer also holds **static operational dimension tables** that provide human and equipment context for the ontology and the Operations Agent. These are managed Delta tables written directly into `silver_rti` — no CDC or Mirroring needed.
+
+### Tables created
+
+| Table | Contents |
+|---|---|
+| `Employees` | Operator, supervisor, and maintenance personnel assigned to the plant |
+| `Shifts` | Day (06:00–18:00), Night (18:00–06:00), and Swing shift definitions |
+| `ShiftAssignments` | Which employee covers which process unit during which shift period |
+| `EquipmentSpecs` | Manufacturer, model, year built, and nominal power for each piece of equipment |
+| `OperatingLimits` | Design min/max and trip setpoints for each parameter type per equipment |
+
+### Import and run
+1. Fabric workspace → **+ New item → Import notebook**
+2. Upload `fabric/notebooks/03-seed-dimension-tables.ipynb`
+3. Attach `silver_rti` as the default lakehouse
+4. **Run all** — each cell writes one managed Delta table to `silver_rti`
+
+### Verify
+`silver_rti` → **Tables** → you should see `Employees`, `Shifts`, `ShiftAssignments`, `EquipmentSpecs`, `OperatingLimits` listed as managed Delta tables under `dbo`.
+
+> These are **one-time seed tables**. Re-run the notebook with `mode("overwrite")` to update data. No streaming or scheduled refresh is required.
+
+---
+
 ## Phase 2 Complete ✓
 
 **What you have:**
 - `bronze_rti` Lakehouse with 6 shortcut tables (zero storage cost, live CDC data)
 - `silver_rti` Lakehouse with enriched, streaming sensor readings (updated every 30 s)
 - 3 Materialized Lake Views refreshed hourly: `SensorCurrentState`, `SensorHourlyAgg`, `CompressorKpiHourly`
+- 5 operational dimension tables in `silver_rti`: `Employees`, `Shifts`, `ShiftAssignments`, `EquipmentSpecs`, `OperatingLimits`
 - DirectLake (SQL) Semantic Model for near-real-time Power BI reports
 
 ---

@@ -38,7 +38,19 @@ The ontology needs a dedicated Semantic Model with DAX measures — separate fro
 2. Toolbar → **New semantic model**
 3. Name: `GasPlant_Ontology_SM`
 4. Storage mode: **Direct Lake on SQL**
-5. Select tables: `SensorCurrentState`, `SensorHourlyAgg`, `CompressorKpiHourly`
+5. Select tables (under `dbo`):
+
+   | Table | Source |
+   |---|---|
+   | `SensorCurrentState` | MLV — latest reading per sensor |
+   | `SensorHourlyAgg` | MLV — hourly aggregations |
+   | `CompressorKpiHourly` | MLV — compressor KPIs |
+   | `Employees` | Dim — plant personnel |
+   | `Shifts` | Dim — shift definitions |
+   | `ShiftAssignments` | Dim — employee–shift–unit assignments |
+   | `EquipmentSpecs` | Dim — equipment specifications |
+   | `OperatingLimits` | Dim — design and trip setpoints |
+
 6. **Confirm**
 
 ### Add DAX measures
@@ -78,6 +90,24 @@ CALCULATE(
 )
 ```
 
+**On `Employees` table:**
+```dax
+Operators on Duty =
+CALCULATE(
+    COUNTROWS(Employees),
+    Employees[role] = "Operator"
+)
+```
+
+**On `EquipmentSpecs` table:**
+```dax
+Avg Equipment Age (Years) =
+AVERAGEX(
+    EquipmentSpecs,
+    YEAR(TODAY()) - EquipmentSpecs[year_built]
+)
+```
+
 ---
 
 ## Step 2 — Generate Fabric Ontology from Semantic Model
@@ -88,13 +118,13 @@ CALCULATE(
 1. Open `GasPlant_Ontology_SM` semantic model
 2. Ribbon → **Generate Ontology**
 3. Workspace: your workspace, Name: `GasPlant_Ontology`
-4. **Create** — Fabric generates entity types from the 3 tables automatically
+4. **Create** — Fabric generates entity types from all 8 tables automatically
 
 ---
 
 ## Step 3 — Configure Entity Types
 
-After generation, the ontology editor shows 3 entity types. Configure each:
+After generation, the ontology editor shows 8 entity types. Configure each:
 
 ### SensorCurrentState (rename to `Sensor`)
 - Entity type key: `sensor_id`
@@ -111,16 +141,45 @@ After generation, the ontology editor shows 3 entity types. Configure each:
 - Instance display name: `equipment_name`
 - Verify properties: `equipment_id`, `equipment_name`, `avg_suction_pressure`, `avg_discharge_pressure`, `avg_speed_rpm`, `avg_power_kw`
 
+### Employees (rename to `Employee`)
+- Entity type key: `id`
+- Instance display name: `name`
+- Verify properties: `id`, `name`, `role`, `train_assigned`, `shift_preference`, `certifications`
+
+### Shifts (rename to `Shift`)
+- Entity type key: `id`
+- Instance display name: `name`
+- Verify properties: `id`, `name`, `start_hour`, `end_hour`, `days_of_week`
+
+### ShiftAssignments (rename to `ShiftAssignment`)
+- Entity type key: `id`
+- Verify properties: `id`, `employee_id`, `shift_id`, `unit_id`, `date_start`, `date_end`
+
+### EquipmentSpecs (rename to `Equipment`)
+- Entity type key: `equipment_id`
+- Verify properties: `equipment_id`, `manufacturer`, `model`, `year_built`, `nominal_power_kw`, `compressor_type`
+
+### OperatingLimits
+- Entity type key: `equipment_id`
+  > If composite key (equipment_id + parameter_type) is needed, use `equipment_id` alone and treat `parameter_type` as a filterable property.
+- Verify properties: `equipment_id`, `parameter_type`, `design_min`, `design_max`, `trip_low`, `trip_high`
+
 ---
 
 ## Step 4 — Configure Relationships
 
-Add or verify the relationship between entity types:
+Add or verify the relationships between entity types:
 
+| Relationship name | From entity | From column | To entity | To column |
+|---|---|---|---|---|
+| `hasSensorHistory` | `Sensor` | `sensor_id` | `SensorHourlyAgg` | `sensor_id` |
+| `assignedToShift` | `ShiftAssignment` | `shift_id` | `Shift` | `id` |
+| `assignedToEmployee` | `ShiftAssignment` | `employee_id` | `Employee` | `id` |
+| `hasOperatingLimits` | `Equipment` | `equipment_id` | `OperatingLimits` | `equipment_id` |
+
+To add each relationship:
 1. Ribbon → **Add relationship**
-2. Name: `hasSensorHistory`
-   - From: `Sensor` (SensorCurrentState) → column: `sensor_id`
-   - To: `SensorHourlyAgg` → column: `sensor_id`
+2. Fill in the From/To entity and column as shown above
 3. **Save**
 
 ---
@@ -165,9 +224,9 @@ Try these sample prompts:
 ## Phase 4 Complete ✓
 
 **What you have:**
-- `GasPlant_Ontology_SM` semantic model with DAX measures over Silver MLV tables
-- `GasPlant_Ontology` with 3 entity types (`Sensor`, `SensorHourlyAgg`, `Compressor`) bound to live Silver data
-- Operations Agent answering natural language questions about plant health
+- `GasPlant_Ontology_SM` semantic model with DAX measures over 8 Silver tables (3 MLVs + 5 dimension tables)
+- `GasPlant_Ontology` with 8 entity types (`Sensor`, `SensorHourlyAgg`, `Compressor`, `Employee`, `Shift`, `ShiftAssignment`, `Equipment`, `OperatingLimits`) bound to live Silver data
+- Operations Agent answering natural language questions about plant health, personnel, and equipment
 
 ## Troubleshooting
 
