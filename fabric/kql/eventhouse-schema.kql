@@ -150,3 +150,76 @@ with
     docstring = "Plant equipment hierarchy (Plant → Train → Compressor / Separator / Meter)",
     folder    = "Bronze"
 )
+
+// =============================================================================
+// NATIVE TABLES — for Ontology bindings and Materialized Views
+//
+// Fabric Ontology (Preview) does not support external tables (shortcuts) as
+// data sources. Native tables are required for:
+//   - Entity type bindings (tabular)
+//   - Time series bindings
+//   - Materialized views
+//
+// Ingestion strategy:
+//   - SensorTelemetry: initial full load + incremental append via pipeline
+//   - SensorCurrentState: materialized view (auto-updated by KQL engine)
+// =============================================================================
+
+// ── Step 1: Create native telemetry table ────────────────────────────────────
+// Run once to create the table schema.
+.create-or-merge table SensorTelemetry (
+    reading_id : long,
+    sensor_id  : int,
+    ts         : datetime,
+    value      : real,
+    quality    : int
+)
+with
+(
+    docstring = "Native copy of SensorReadings for Ontology time series binding",
+    folder    = "Silver"
+)
+
+// ── Step 2: Initial full load from shortcut ───────────────────────────────────
+// Run ONCE after table creation to backfill all available history.
+// Remove or comment out after initial load — use Step 3 for ongoing updates.
+.set-or-append SensorTelemetry <|
+external_table('SensorReadings')
+
+// ── Step 3: Incremental append (run via pipeline every 5 min) ────────────────
+// Add this as a KQL Script activity in pl-watchdog or a dedicated pipeline.
+// Uses the watermark pattern to avoid duplicate ingestion.
+.append SensorTelemetry <|
+let last_ts = toscalar(SensorTelemetry | summarize max(ts));
+external_table('SensorReadings')
+| where ts > last_ts
+
+// ── Step 4: Materialized View — current state (1 row per sensor) ─────────────
+// Auto-maintained by the KQL engine whenever SensorTelemetry receives new data.
+// Use this table as the entity binding source in the Ontology (key: sensor_id).
+.create-or-alter materialized-view with (backfill=true) SensorCurrentState on table SensorTelemetry
+{
+    SensorTelemetry
+    | summarize arg_max(ts, value, quality) by sensor_id
+}
+
+// ── Step 5: Enriched current state with alarm status (optional lookup) ────────
+// If you need tag_name / alarm thresholds in the Ontology entity properties,
+// join SensorCurrentState against the Sensors external table at query time:
+//
+// SensorCurrentState
+// | join kind=inner (
+//     external_table('Sensors')
+//     | project sensor_id, tag_id, tag_name, parameter_type, unit_of_measure,
+//               equipment_id, normal_min, normal_max, alarm_low, alarm_high
+// ) on sensor_id
+// | extend
+//     alarm_status    = case(value > alarm_high, "ALARM-H",
+//                            value < alarm_low,  "ALARM-L",
+//                            value > normal_max, "HIGH",
+//                            value < normal_min, "LOW",
+//                                                "NORMAL"),
+//     is_out_of_range = value > normal_max or value < normal_min
+// | project sensor_id, tag_id, tag_name, parameter_type, unit_of_measure,
+//           equipment_id, value = round(value, 2), alarm_status,
+//           is_out_of_range, last_updated = ts
